@@ -47,11 +47,14 @@ def main(args):
 
     if args.test_before_train:
         logger.log("\n==================Generation Results before Pruning================\n")
+        print(f"the number of prompts is {len(prompts)}")
         model = model.to(args.eval_device)
         model.eval()
         with torch.no_grad():
             for prompt in prompts:
+
                 input_ids = tokenizer(prompt, return_tensors="pt")['input_ids'].to(args.eval_device)
+                logger.log(f"the shape of current input sequences is ==={input_ids}===")
 
                 generation_output = model.generate(
                     input_ids=input_ids,
@@ -66,6 +69,7 @@ def main(args):
                 logger.log(result)
     
         ppl = PPLMetric(model, tokenizer, ['wikitext2', 'ptb'], args.max_seq_len, device=args.eval_device)
+        #ppl = PPLMetric(model, tokenizer, [ 'wikitext2'], args.max_seq_len, device=args.eval_device)
         logger.log("PPL before pruning: {}".format(ppl))
 
     model.to(args.device)
