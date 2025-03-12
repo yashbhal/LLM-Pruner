@@ -3,7 +3,7 @@
 ### meta-llama/Llama-3.2-1B-Instruct
 
 
-** changing the layers to prune**
+**changing the layers to prune**
 
 ```bash
 python llama3.py --pruning_ratio 0.25 \
