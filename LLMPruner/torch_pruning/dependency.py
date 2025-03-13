@@ -692,8 +692,6 @@ class DependencyGraph(object):
 
         module2node = {}
         for o in utils.flatten_as_list(out):
-            print("==================")
-            print(o, type(0))
             self._trace_computational_graph(
                 module2node, o[0].grad_fn, gradfn2module, reused)
 
