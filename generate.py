@@ -26,11 +26,11 @@ def main(args):
         )
         description = "Model Type: {}\n Base Model: {}".format(args.model_type, args.base_model)
     elif args.model_type == 'pruneLLM':
-        pruned_dict = torch.load(args.ckpt, map_location='cpu')
+        pruned_dict = torch.load(args.ckpt, map_location='cpu', weights_only=False)
         tokenizer, model = pruned_dict['tokenizer'], pruned_dict['model']
         description = "Model Type: {}\n Pruned Model: {}".format(args.model_type, args.ckpt)
     elif args.model_type == 'tune_prune_LLM':
-        pruned_dict = torch.load(args.ckpt, map_location='cpu')
+        pruned_dict = torch.load(args.ckpt, map_location='cpu', weights_only=False)
         tokenizer, model = pruned_dict['tokenizer'], pruned_dict['model']
         model = PeftModel.from_pretrained(
             model,
@@ -97,7 +97,7 @@ def main(args):
             gr.components.Checkbox(label="Stream output"),
         ],
         outputs=[
-            gr.inputs.Textbox(
+            gr.components.Textbox(
                 lines=5,
                 label="Output",
             )
@@ -110,7 +110,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Tuning Pruned LLaMA (huggingface version)')
 
-    parser.add_argument('--base_model', type=str, default="decapoda-research/llama-7b-hf", help='base model name')
+    parser.add_argument('--base_model', type=str, default="meta-llama/Llama-3.2-1B-Instruct", help='base model name')
     parser.add_argument('--model_type', type=str, required=True, help = 'choose from ')
     parser.add_argument('--ckpt', type=str, default=None)
     parser.add_argument('--lora_ckpt', type=str, default=None)
