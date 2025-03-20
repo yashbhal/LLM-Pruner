@@ -10,7 +10,6 @@ ckpt
 *.ckpt
 *.pth
 
-*.ipynb
 *.bin
 log.txt
 *_log
