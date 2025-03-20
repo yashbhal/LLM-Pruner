@@ -7,7 +7,9 @@ import numpy as np
 
 import transformers
 from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
-from transformers.activations import SiLUActivation
+from transformers import AutoTokenizer # new import
+# from transformers.activations import SiLUActivation
+from torch.nn import SiLU as SiLUActivation
 
 from ptflops import get_model_complexity_info
 from ptflops.pytorch_ops import bn_flops_counter_hook, pool_flops_counter_hook
@@ -46,13 +48,15 @@ def rmsnorm_flops_counter_hook(module, input, output):
 
 def main(args):
     if args.model_type == 'pretrain':
-        tokenizer = LlamaTokenizer.from_pretrained(args.base_model)
+#         tokenizer = LlamaTokenizer.from_pretrained(args.base_model)
+        tokenizer = AutoTokenizer.from_pretrained(args.base_model)
         model = LlamaForCausalLM.from_pretrained(
             args.base_model,
-            low_cpu_mem_usage=True if torch_version >=9 else False
+            low_cpu_mem_usage=True if torch_version >=9 else False,
+            ignore_mismatched_sizes=True # add this
         )
     elif args.model_type == 'pruneLLM':
-        pruned_dict = torch.load(args.ckpt, map_location='cpu')
+        pruned_dict = torch.load(args.ckpt, map_location='cpu', weights_only=False) # add weights_only
         tokenizer, model = pruned_dict['tokenizer'], pruned_dict['model']
     else:
         raise NotImplementedError
