@@ -56,6 +56,12 @@ def main(args):
                 input_ids = tokenizer(prompt, return_tensors="pt")['input_ids'].to(args.eval_device)
                 logger.log(f"the shape of current input sequences is ==={input_ids}===")
 
+                for layer in model.model.layers:
+                    try:
+                        layer.self_attn.hidden_size = layer.self_attn.o_proj.out_features
+                    except:
+                        pass
+
                 generation_output = model.generate(
                     input_ids=input_ids,
                     do_sample=True,
@@ -69,7 +75,6 @@ def main(args):
                 logger.log(result)
     
         ppl = PPLMetric(model, tokenizer, ['wikitext2', 'ptb'], args.max_seq_len, device=args.eval_device)
-        #ppl = PPLMetric(model, tokenizer, [ 'wikitext2'], args.max_seq_len, device=args.eval_device)
         logger.log("PPL before pruning: {}".format(ppl))
 
     model.to(args.device)
@@ -80,11 +85,11 @@ def main(args):
     for param in model.parameters():
         param.requires_grad_(True)
     before_pruning_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
+
     forward_prompts = torch.tensor([
         [    1,   306,  4658,   278,  6593,   310,  2834,   338],
         [    1,  3439, 17632,  1925, 29892,   278,  6368,   310],
-    ]).to(args.device) # Only for building the dependency graph. Any input will be fine since the computation result are not taken into consideration.
+    ]).to(args.device)
 
     if pruner_type == 'random':
         imp = tp.importance.RandomImportance()
@@ -98,7 +103,7 @@ def main(args):
         raise NotImplementedError
 
     logger.log("Use {} pruner...".format(pruner_type))
-    
+
     if args.block_wise:
         kwargs = {
             "importance": imp,
@@ -106,8 +111,7 @@ def main(args):
             "iterative_steps": args.iterative_steps,
             "ch_sparsity": args.pruning_ratio, 
             "ignored_layers":[],
-            "channel_groups": {
-            },
+            "channel_groups": {},
             "consecutive_groups": {
                 layer.self_attn.k_proj: layer.self_attn.head_dim for layer in model.model.layers
             },
@@ -134,6 +138,13 @@ def main(args):
             if pruner_type in ['taylor']:
                 example_prompts = get_examples('bookcorpus', tokenizer, args.num_examples, seq_len = 64).to(args.device)
                 logger.log("Start Backwarding in iterative steps = {}...".format(i))
+                
+                for layer in model.model.layers:
+                    try:
+                        layer.self_attn.hidden_size = layer.self_attn.o_proj.out_features
+                    except:
+                        pass
+
                 if args.taylor in ['param_mix', 'param_second']:
                     for j in range(args.num_examples):
                         print(j)
@@ -149,25 +160,27 @@ def main(args):
                             else:
                                 module_param.acc_grad = copy.deepcopy(module_param.grad)
                         model.zero_grad()
-                        del loss.grad
-                    
-                loss = model(example_prompts, labels=example_prompts).loss
-                logger.log("Loss = {}".format(loss))
-                loss.backward()
+                        del loss
+                else:
+                    loss = model(example_prompts, labels=example_prompts).loss
+                    logger.log("Loss = {}".format(loss))
+                    loss.backward()
 
-            # 1. Consecutive for grouped KV
-            # 2. 
             pruner.step()
+
+            for layer in model.model.layers:
+                try:
+                    layer.self_attn.hidden_size = layer.self_attn.o_proj.out_features
+                except:
+                    pass
 
             after_pruning_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
             logger.log("After Iter {}/{}, #parameters: {}".format(i+1, args.iterative_steps, after_pruning_parameters))
-        
-            # modify inferece-related attributes
+
             for layer in model.model.layers:
                 layer.self_attn.num_heads = layer.self_attn.q_proj.weight.data.shape[0] // layer.self_attn.head_dim
                 layer.self_attn.num_key_value_heads = layer.self_attn.k_proj.weight.data.shape[0] // layer.self_attn.head_dim
 
-        # Clean the gradient in the model
         model.zero_grad()
         for name, module in model.named_parameters():
             if 'weight' in name:
@@ -200,17 +213,48 @@ def main(args):
         )
         model.zero_grad()
         
+
         logger.log("Start Pruning")
         for i in range(args.iterative_steps):
 
             if pruner_type in ['taylor']:
-                example_prompts = get_examples('bookcorpus', tokenizer, 10, seq_len = 64)
+                example_prompts = get_examples('bookcorpus', tokenizer, args.num_examples, seq_len=64).to(args.device)
                 logger.log("Start Backwarding in iterative steps = {}...".format(i))
-                loss = model(example_prompts, labels=example_prompts).loss
-                logger.log("Loss = {}".format(loss))
-                loss.backward()
+
+                if args.taylor in ['param_mix', 'param_second']:
+                    for j in range(args.num_examples):
+                        print(j)
+                        batch_input = example_prompts[j].unsqueeze(0)
+                        loss = model(batch_input, labels=batch_input).loss
+                        logger.log("Loss = {}".format(loss))
+                        loss.backward()
+
+                        for module_param in model.parameters():
+                            module_param.grad = module_param.grad * module_param.grad / args.num_examples
+                            if hasattr(module_param, 'acc_grad'):
+                                module_param.acc_grad += module_param.grad
+                            else:
+                                module_param.acc_grad = copy.deepcopy(module_param.grad)
+                        model.zero_grad()
+                        del loss  # Previously: del loss.grad
+
+                else:
+                    loss = model(example_prompts, labels=example_prompts).loss
+                    logger.log("Loss = {}".format(loss))
+                    loss.backward()
 
             pruner.step()
+
+            # Patch hidden_size after pruning to fix .view() errors
+            for layer in model.model.layers:
+                try:
+                    layer.self_attn.hidden_size = layer.self_attn.o_proj.out_features
+                except:
+                    pass
+
+            for layer in model.model.layers:
+                layer.self_attn.num_heads = layer.self_attn.q_proj.weight.data.shape[0] // layer.self_attn.head_dim
+                layer.self_attn.num_key_value_heads = layer.self_attn.k_proj.weight.data.shape[0] // layer.self_attn.head_dim
 
             after_pruning_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
             logger.log("After Iter {}/{}, #parameters: {}".format(i+1, args.iterative_steps, after_pruning_parameters))
@@ -261,6 +305,12 @@ def main(args):
             for prompt in prompts:
                 input_ids = tokenizer(prompt, return_tensors="pt")['input_ids'].to(args.eval_device)
 
+                for layer in model.model.layers:
+                    try:
+                        layer.self_attn.hidden_size = layer.self_attn.o_proj.out_features
+                    except:
+                        pass
+
                 generation_output = model.generate(
                     input_ids=input_ids,
                     do_sample=True,
@@ -278,6 +328,7 @@ def main(args):
     ppl = PPLMetric(model, tokenizer, ['wikitext2', 'ptb'], args.max_seq_len, device=args.eval_device)
     logger.log("PPL after pruning: {}".format(ppl))
     logger.log("Memory Requirement: {} MiB\n".format(torch.cuda.memory_allocated()/1024/1024))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Pruning LLaMA (huggingface version)')
@@ -318,8 +369,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--seed', type=int, default=42, help='seed')
     parser.add_argument('--save_model', action='store_true', help='if save model')
-    args = parser.parse_args()
 
+    args = parser.parse_args()
     torch_version = float('.'.join(torch.__version__.split('.')[:2]))
     args.torch_version = torch_version
     main(args)

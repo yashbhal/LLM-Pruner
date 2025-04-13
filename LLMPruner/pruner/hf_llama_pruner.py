@@ -220,125 +220,107 @@ class TaylorImportance(tp.importance.Importance):
 
     def _reduce(self, group_imp):
         if self.group_reduction == "sum":
-            group_imp = group_imp.sum(dim=0)
+            return group_imp.sum(dim=0)
         elif self.group_reduction == "mean":
-            group_imp = group_imp.mean(dim=0)
+            return group_imp.mean(dim=0)
         elif self.group_reduction == "max":
-            group_imp = group_imp.max(dim=0)[0]
+            return group_imp.max(dim=0)[0]
         elif self.group_reduction == "prod":
-            group_imp = torch.prod(group_imp, dim=0)
-        elif self.group_reduction=='first':
-            group_imp = group_imp[0]
-        elif self.group_reduction=='second':
-            group_imp = group_imp[1]
+            return torch.prod(group_imp, dim=0)
+        elif self.group_reduction == 'first':
+            return group_imp[0]
+        elif self.group_reduction == 'second':
+            return group_imp[1]
         elif self.group_reduction is None:
-            group_imp = group_imp
-        else: 
+            return group_imp
+        else:
             raise NotImplementedError
-        return group_imp
 
     @torch.no_grad()
     def __call__(self, group, ch_groups=1, consecutive_groups=1):
-    
         group_imp = []
+
         for dep, idxs in group:
             idxs.sort()
             layer = dep.target.module
             prune_fn = dep.handler
 
             if prune_fn not in [
-                tp.prune_linear_out_channels, tp.prune_linear_in_channels, 
-                hf_rmsnorm_pruner.prune_out_channels, tp.prune_embedding_out_channels, hf_attention_pruner.prune_out_channels,
-                hf_linear_pruner.prune_out_channels, hf_linear_pruner.prune_in_channels
+                tp.prune_linear_out_channels, tp.prune_linear_in_channels,
+                hf_rmsnorm_pruner.prune_out_channels,
+                tp.prune_embedding_out_channels,
+                hf_attention_pruner.prune_out_channels,
+                hf_linear_pruner.prune_out_channels,
+                hf_linear_pruner.prune_in_channels
             ]:
                 continue
-            
-            if prune_fn in [hf_attention_pruner.prune_out_channels]:
+
+            # Skip layers where gradients are missing
+            if not hasattr(layer, "weight") or layer.weight.grad is None:
+                continue
+
+            # Salience calculation
+            if prune_fn == hf_attention_pruner.prune_out_channels:
                 salience = {}
                 for sub_layer in [layer.o_proj, layer.q_proj, layer.k_proj, layer.v_proj]:
-                    salience[sub_layer] = sub_layer.weight * sub_layer.weight.grad
-                    
-                    if self.taylor in ['param_second']:
-                        salience[sub_layer] = sub_layer.weight * sub_layer.weight.acc_grad * sub_layer.weight
-                    elif self.taylor in ['param_mix']: 
-                        salience[sub_layer] = -salience + 0.5 * sub_layer.weight * sub_layer.weight.acc_grad * sub_layer.weight   
+                    if sub_layer.weight.grad is None:
+                        continue
+                    s = sub_layer.weight * sub_layer.weight.grad
+                    if self.taylor == 'param_second' and hasattr(sub_layer.weight, 'acc_grad'):
+                        s = sub_layer.weight * sub_layer.weight.acc_grad * sub_layer.weight
+                    elif self.taylor == 'param_mix' and hasattr(sub_layer.weight, 'acc_grad'):
+                        s = -s + 0.5 * sub_layer.weight * sub_layer.weight.acc_grad * sub_layer.weight
+                    salience[sub_layer] = s
             else:
                 salience = layer.weight * layer.weight.grad
-
-                if self.taylor in ['param_second']:
+                if self.taylor == 'param_second' and hasattr(layer.weight, 'acc_grad'):
                     salience = layer.weight * layer.weight.acc_grad * layer.weight
-                elif self.taylor in ['param_mix']: 
+                elif self.taylor == 'param_mix' and hasattr(layer.weight, 'acc_grad'):
                     salience = salience - 0.5 * layer.weight * layer.weight.acc_grad * layer.weight
-                    
-            # Linear out_channels
+
+            # Importance calculation
             if prune_fn in [tp.prune_linear_out_channels, hf_linear_pruner.prune_out_channels]:
-                if self.taylor == 'vectorize':
-                    local_norm = salience.sum(1).abs()
-                elif 'param' in self.taylor:
-                    local_norm = salience.abs().sum(1)
-                else:
-                    raise NotImplementedError
+                local_norm = salience.abs().sum(1)
                 group_imp.append(local_norm)
 
-            # Linear in_channels
             elif prune_fn in [tp.prune_linear_in_channels, hf_linear_pruner.prune_in_channels]:
-                if self.taylor == 'vectorize':
-                    local_norm = salience.sum(0).abs()
-                elif 'param' in self.taylor:
-                    local_norm = salience.abs().sum(0)
-                else:
-                    raise NotImplementedError
+                local_norm = salience.abs().sum(0)
                 local_norm = local_norm[idxs]
                 group_imp.append(local_norm)
 
-            # RMSNorm
             elif prune_fn == hf_rmsnorm_pruner.prune_out_channels:
                 local_norm = salience.abs()
                 group_imp.append(local_norm)
 
-            # Embedding
             elif prune_fn == tp.prune_embedding_out_channels:
-                if self.taylor == 'vectorize':
-                    local_norm = salience[:, idxs].sum(0).abs()
-                elif 'param' in self.taylor:
-                    local_norm = salience[:, idxs].abs().sum(0)
-                else:
-                    raise NotImplementedError
+                local_norm = salience[:, idxs].abs().sum(0)
                 group_imp.append(local_norm)
 
-            # Attention
             elif prune_fn == hf_attention_pruner.prune_out_channels:
                 local_norm = 0
-                for sub_layer in [layer.o_proj]: #linear out channel, first dim in linear.weight
-                    if self.taylor == 'vectorize':
-                        local_norm += salience[sub_layer].sum(1).abs()
-                    elif 'param' in self.taylor: 
-                        local_norm += salience[sub_layer].abs().sum(1)   
-                    else:
-                        raise NotImplementedError                
-                
-                for sub_layer in [layer.q_proj, layer.k_proj, layer.v_proj]: # linear in channel, second dim in linear.weight
-                    if self.taylor == 'vectorize':
-                        local_norm += salience[sub_layer].sum(0).abs() 
-                    elif 'param' in self.taylor == 'param':
+                for sub_layer in [layer.o_proj]:
+                    if sub_layer in salience:
+                        local_norm += salience[sub_layer].abs().sum(1)
+                for sub_layer in [layer.q_proj, layer.k_proj, layer.v_proj]:
+                    if sub_layer in salience:
                         local_norm += salience[sub_layer].abs().sum(0)
-                    else:
-                        raise NotImplementedError
                 group_imp.append(local_norm)
 
-        if len(group_imp)==0:
+        if len(group_imp) == 0:
             return None
 
-        min_imp_size = min([len(imp) for imp in group_imp])
-        aligned_group_imp = []
+        # Alignment and reduction
+        min_len = min(len(x) for x in group_imp)
+        aligned = []
         for imp in group_imp:
-            if len(imp)>min_imp_size and len(imp)%min_imp_size==0:
-                imp = imp.view(len(imp) // min_imp_size, min_imp_size).sum(0)
-                aligned_group_imp.append(imp)
-            elif len(imp)==min_imp_size:
-                aligned_group_imp.append(imp)
-        group_imp = torch.stack(aligned_group_imp, dim=0)
+            if len(imp) > min_len and len(imp) % min_len == 0:
+                aligned.append(imp.view(-1, min_len).sum(0))
+            elif len(imp) == min_len:
+                aligned.append(imp)
+        group_imp = torch.stack(aligned, dim=0)
         group_imp = self._reduce(group_imp)
+
         if self.normalizer is not None:
             group_imp = self.normalizer(group, group_imp)
+
         return group_imp

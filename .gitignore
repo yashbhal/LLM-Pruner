@@ -29,3 +29,56 @@ lm_cache
 .idea
 *.log
 *.egg-info
+
+# ignore models
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+
+# Ignore Jupyter/IPython stuff
+.ipynb_checkpoints/
+
+# Ignore model files and large binaries
+*.bin
+*.pt
+*.ckpt
+*.safetensors
+
+# Ignore pruned/tuned/merged models
+prune_log/
+tune_log/
+merged_models/
+zip_outputs/
+
+# Ignore Hugging Face cache
+~/.cache/huggingface/
+~/.huggingface/
+
+# Ignore logs
+*.log
+*.out
+*.err
+wandb/
+*.jsonl
+
+# Ignore zip files and tarballs
+*.zip
+*.tar
+*.tar.gz
+
+# IDE/editor configs
+.vscode/
+.idea/
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+pip-wheel-metadata/
+
+# Dataset downloads
+data/
+datasets/
